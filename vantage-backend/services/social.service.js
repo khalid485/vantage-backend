@@ -4,13 +4,11 @@ const logger = require('../config/logger');
 const APIFY_TOKEN = process.env.APIFY_API_TOKEN;
 const APIFY_BASE  = 'https://api.apify.com/v2';
 
-// Correct actor IDs (not slugs)
-const ACTOR_TIKTOK    = 'GdWCkxBtKWOsKjdch'; // clockworks/tiktok-scraper
-const ACTOR_INSTAGRAM = 'shu8hvrXbJbY3Eb9W'; // apify/instagram-scraper
+const ACTOR_TIKTOK    = 'GdWCkxBtKWOsKjdch';  // clockworks/tiktok-scraper ✅ working
+const ACTOR_INSTAGRAM = 'cHEjMoZJBi3pnNnMK';  // apify/instagram-hashtag-scraper
 
 async function runActor(actorId, input) {
   logger.info(`[SOCIAL] Starting actor ${actorId}`);
-
   const run = await axios.post(
     `${APIFY_BASE}/acts/${actorId}/runs?token=${APIFY_TOKEN}&timeout=90`,
     input,
@@ -19,7 +17,6 @@ async function runActor(actorId, input) {
   const runId = run.data.data.id;
   logger.info(`[SOCIAL] Actor ${actorId} run started: ${runId}`);
 
-  // Poll until finished (max 90s, check every 5s)
   for (let i = 0; i < 18; i++) {
     await new Promise(r => setTimeout(r, 5000));
     const statusRes = await axios.get(
@@ -28,9 +25,7 @@ async function runActor(actorId, input) {
     const st = statusRes.data.data.status;
     logger.info(`[SOCIAL] Actor ${actorId} status: ${st} (attempt ${i + 1})`);
     if (st === 'SUCCEEDED') break;
-    if (st === 'FAILED' || st === 'ABORTED' || st === 'TIMED-OUT') {
-      throw new Error(`Actor ${actorId} ended with status: ${st}`);
-    }
+    if (['FAILED','ABORTED','TIMED-OUT'].includes(st)) throw new Error(`Actor ${actorId} ended: ${st}`);
   }
 
   const dataset = await axios.get(
@@ -46,9 +41,9 @@ async function scanTikTok(query) {
     const hashtag = query.replace(/\s+/g, '').toLowerCase();
     logger.info(`[SOCIAL] TikTok scan for hashtag: ${hashtag}`);
     const results = await runActor(ACTOR_TIKTOK, {
-      hashtags:       [hashtag],
-      resultsPerPage: 10,
-      maxResults:     10,
+      hashtags:                [hashtag],
+      resultsPerPage:          10,
+      maxResults:              10,
       shouldDownloadVideos:    false,
       shouldDownloadCovers:    false,
       shouldDownloadSubtitles: false,
@@ -70,9 +65,8 @@ async function scanInstagram(query) {
     const hashtag = query.replace(/\s+/g, '').toLowerCase();
     logger.info(`[SOCIAL] Instagram scan for hashtag: ${hashtag}`);
     const results = await runActor(ACTOR_INSTAGRAM, {
-      hashtags:      [hashtag],
-      resultsLimit:  10,
-      addParentData: false,
+      hashtags:     [hashtag],
+      resultsLimit: 10,
     });
     return results.map(r => ({
       url:      r.url || (r.shortCode ? `https://instagram.com/p/${r.shortCode}` : null),
