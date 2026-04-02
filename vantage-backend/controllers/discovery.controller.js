@@ -137,21 +137,26 @@ async function listScans(req, res, next) {
 
 async function listViolations(req, res, next) {
   try {
-    const { page = 1, limit = 20, status } = req.query;
-    const from = (page - 1) * limit;
+    const { page = 1, limit, status } = req.query;
 
     let q = supabase
       .from('violations')
       .select('*', { count: 'exact' })
       .eq('user_id', req.user.id)
-      .order('created_at', { ascending: false })
-      .range(from, from + limit - 1);
+      .order('created_at', { ascending: false });
+
+    // Only paginate if limit is explicitly passed
+    if (limit) {
+      const safeLimit = parseInt(limit);
+      const from = (parseInt(page) - 1) * safeLimit;
+      q = q.range(from, from + safeLimit - 1);
+    }
 
     if (status) q = q.eq('status', status);
 
     const { data, error, count } = await q;
     if (error) throw new Error(error.message);
-    res.json({ violations: data, total: count, page, limit });
+    res.json({ violations: data, total: count, page });
   } catch (err) {
     next(err);
   }
