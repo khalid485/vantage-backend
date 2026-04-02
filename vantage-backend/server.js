@@ -14,6 +14,7 @@ const reportsRoutes   = require('./routes/reports.routes');
 const assetsRoutes    = require('./routes/assets.routes');
 
 const app  = express();
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3001;
 
 // ── Security headers ──────────────────────────────────────
