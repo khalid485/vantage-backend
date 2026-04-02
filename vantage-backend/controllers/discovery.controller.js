@@ -5,6 +5,44 @@ const impact     = require('../services/impact.service');
 const audit      = require('../services/auditLog.service');
 const logger     = require('../config/logger');
 
+// ── Background Apify scan — fires after main scan, saves to Supabase ──
+async function runSocialBackground(query, userId, scanId) {
+  try {
+    logger.info(`[SOCIAL] Background scan started for "${query}" (scan ${scanId})`);
+    const socialResults = await social.runSocialScan(query);
+
+    if (socialResults.length > 0) {
+      const rows = socialResults.map(r => ({
+        scan_id:  scanId,
+        user_id:  userId,
+        url:      r.url,
+        platform: r.platform,
+        title:    r.title,
+        snippet:  r.snippet,
+        status:   'detected'
+      }));
+      await supabase.from('violations').insert(rows);
+
+      // Update scan result count
+      const { data: existing } = await supabase
+        .from('scans')
+        .select('result_count')
+        .eq('id', scanId)
+        .single();
+
+      await supabase.from('scans').update({
+        result_count: (existing?.result_count || 0) + socialResults.length,
+      }).eq('id', scanId);
+
+      logger.info(`[SOCIAL] ${socialResults.length} social results saved for scan ${scanId}`);
+    } else {
+      logger.info(`[SOCIAL] No social results found for "${query}"`);
+    }
+  } catch (err) {
+    logger.warn(`[SOCIAL] Background scan failed: ${err.message}`);
+  }
+}
+
 async function startScan(req, res, next) {
   try {
     const { query, assetId } = req.body;
@@ -24,16 +62,11 @@ async function startScan(req, res, next) {
 
     if (scanErr) throw new Error(scanErr.message);
 
-    // Run both scans in parallel
-    const [webResults, socialResults] = await Promise.all([
-      discovery.runDiscoveryScan(query),
-      social.runSocialScan(query)
-    ]);
+    // ── Main scan — Serper only, fast ──
+    const webResults = await discovery.runDiscoveryScan(query);
 
-    const results = [...webResults, ...socialResults];
-
-    if (results.length > 0) {
-      const rows = results.map(r => ({
+    if (webResults.length > 0) {
+      const rows = webResults.map(r => ({
         scan_id:  scan.id,
         user_id:  userId,
         url:      r.url,
@@ -47,14 +80,14 @@ async function startScan(req, res, next) {
 
     await supabase.from('scans').update({
       status:       'complete',
-      result_count: results.length,
+      result_count: webResults.length,
       completed_at: new Date().toISOString()
     }).eq('id', scan.id);
 
     const impactData = await impact.calculateImpact({
       scanId:         scan.id,
       userId,
-      violationCount: results.length
+      violationCount: webResults.length
     });
 
     await audit.log({
@@ -62,15 +95,20 @@ async function startScan(req, res, next) {
       action:   'scan.completed',
       entity:   'scans',
       entityId: scan.id,
-      meta:     { resultCount: results.length, query },
+      meta:     { resultCount: webResults.length, query },
       ip:       req.ip
     });
 
+    // ── Fire Apify in background — does NOT block the response ──
+    runSocialBackground(query, userId, scan.id);
+
+    // ── Respond immediately with Serper results ──
     res.json({
       scanId:         scan.id,
-      violationCount: results.length,
-      violations:     results,
-      impactEstimate: impactData
+      violationCount: webResults.length,
+      violations:     webResults,
+      impactEstimate: impactData,
+      socialPending:  true, // tells frontend: social scan is running
     });
 
   } catch (err) {
