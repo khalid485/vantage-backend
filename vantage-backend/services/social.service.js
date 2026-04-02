@@ -4,20 +4,20 @@ const logger = require('../config/logger');
 const APIFY_TOKEN = process.env.APIFY_API_TOKEN;
 const APIFY_BASE  = 'https://api.apify.com/v2';
 
-const ACTOR_TIKTOK    = 'GdWCkxBtKWOsKjdch';  // clockworks/tiktok-scraper ✅ working
+const ACTOR_TIKTOK    = 'GdWCkxBtKWOsKjdch';  // clockworks/tiktok-scraper
 const ACTOR_INSTAGRAM = 'shu8hvrXbJbY3Eb9W';  // apify/instagram-scraper
 
 async function runActor(actorId, input) {
   logger.info(`[SOCIAL] Starting actor ${actorId}`);
   const run = await axios.post(
-    `${APIFY_BASE}/acts/${actorId}/runs?token=${APIFY_TOKEN}&timeout=90`,
+    `${APIFY_BASE}/acts/${actorId}/runs?token=${APIFY_TOKEN}&timeout=120`,
     input,
-    { headers: { 'Content-Type': 'application/json' }, timeout: 120000 }
+    { headers: { 'Content-Type': 'application/json' }, timeout: 180000 }
   );
   const runId = run.data.data.id;
-  logger.info(`[SOCIAL] Actor ${actorId} run started: ${runId}`);
+  logger.info(`[SOCIAL] Run started: ${runId}`);
 
-  for (let i = 0; i < 18; i++) {
+  for (let i = 0; i < 40; i++) {
     await new Promise(r => setTimeout(r, 5000));
     const statusRes = await axios.get(
       `${APIFY_BASE}/actor-runs/${runId}?token=${APIFY_TOKEN}`
@@ -25,11 +25,11 @@ async function runActor(actorId, input) {
     const st = statusRes.data.data.status;
     logger.info(`[SOCIAL] Actor ${actorId} status: ${st} (attempt ${i + 1})`);
     if (st === 'SUCCEEDED') break;
-    if (['FAILED','ABORTED','TIMED-OUT'].includes(st)) throw new Error(`Actor ${actorId} ended: ${st}`);
+    if (['FAILED','ABORTED','TIMED-OUT'].includes(st)) throw new Error(`Actor ended: ${st}`);
   }
 
   const dataset = await axios.get(
-    `${APIFY_BASE}/actor-runs/${runId}/dataset/items?token=${APIFY_TOKEN}`
+    `${APIFY_BASE}/actor-runs/${runId}/dataset/items?token=${APIFY_TOKEN}&limit=500`
   );
   const items = dataset.data || [];
   logger.info(`[SOCIAL] Actor ${actorId} returned ${items.length} items`);
@@ -38,46 +38,102 @@ async function runActor(actorId, input) {
 
 async function scanTikTok(query) {
   try {
-    const hashtag = query.replace(/\s+/g, '').toLowerCase();
-    logger.info(`[SOCIAL] TikTok scan for hashtag: ${hashtag}`);
-    const results = await runActor(ACTOR_TIKTOK, {
-      hashtags:                [hashtag],
-      resultsPerPage:          10,
-      maxResults:              10,
-      shouldDownloadVideos:    false,
-      shouldDownloadCovers:    false,
-      shouldDownloadSubtitles: false,
-    });
-    return results.map(r => ({
-      url:      r.webVideoUrl || `https://tiktok.com/@${r.authorMeta?.name}/video/${r.id}`,
-      platform: 'TikTok',
-      title:    r.text?.slice(0, 80) || 'TikTok video',
-      snippet:  `${r.diggCount || 0} likes · ${r.playCount || 0} views`,
-    })).filter(r => r.url);
+    // Build multiple hashtag variations to maximize results
+    const base    = query.replace(/\s+/g, '').toLowerCase();
+    const parts   = query.toLowerCase().split(/\s+/);
+    const hashtags = [...new Set([
+      base,
+      ...parts,
+      base + 'leaked',
+      base + 'onlyfans',
+      base + 'official',
+    ])].slice(0, 5);
+
+    logger.info(`[SOCIAL] TikTok scanning hashtags: ${hashtags.join(', ')}`);
+
+    const seen    = new Set();
+    const results = [];
+
+    await Promise.all(hashtags.map(async (hashtag) => {
+      try {
+        const items = await runActor(ACTOR_TIKTOK, {
+          hashtags:                [hashtag],
+          resultsPerPage:          100,
+          maxResults:              100,
+          shouldDownloadVideos:    false,
+          shouldDownloadCovers:    false,
+          shouldDownloadSubtitles: false,
+        });
+        items.forEach(r => {
+          const url = r.webVideoUrl || `https://tiktok.com/@${r.authorMeta?.name}/video/${r.id}`;
+          if (url && !seen.has(url)) {
+            seen.add(url);
+            results.push({
+              url,
+              platform: 'TikTok',
+              title:    r.text?.slice(0, 80) || 'TikTok video',
+              snippet:  `${r.diggCount || 0} likes · ${r.playCount || 0} views`,
+            });
+          }
+        });
+      } catch (err) {
+        logger.warn(`[SOCIAL] TikTok hashtag "${hashtag}" failed: ${err.message}`);
+      }
+    }));
+
+    logger.info(`[SOCIAL] TikTok total unique results: ${results.length}`);
+    return results;
   } catch (err) {
-    logger.warn(`[SOCIAL] TikTok scrape failed: ${err.message}`);
+    logger.warn(`[SOCIAL] TikTok scan failed: ${err.message}`);
     return [];
   }
 }
 
 async function scanInstagram(query) {
   try {
-    const hashtag = query.replace(/\s+/g, '').toLowerCase();
-    logger.info(`[SOCIAL] Instagram scan for hashtag: ${hashtag}`);
-    // apify/instagram-scraper uses directUrls with hashtag URL
-    const results = await runActor(ACTOR_INSTAGRAM, {
-      directUrls:   [`https://www.instagram.com/explore/tags/${hashtag}/`],
-      resultsType:  'posts',
-      resultsLimit: 10,
-    });
-    return results.map(r => ({
-      url:      r.url || (r.shortCode ? `https://instagram.com/p/${r.shortCode}` : null),
-      platform: 'Instagram',
-      title:    r.caption?.slice(0, 80) || 'Instagram post',
-      snippet:  `${r.likesCount || 0} likes`,
-    })).filter(r => r.url);
+    const base  = query.replace(/\s+/g, '').toLowerCase();
+    const parts = query.toLowerCase().split(/\s+/);
+    const hashtags = [...new Set([
+      base,
+      ...parts,
+      base + 'leaked',
+      base + 'onlyfans',
+      base + 'nsfw',
+    ])].slice(0, 5);
+
+    logger.info(`[SOCIAL] Instagram scanning hashtags: ${hashtags.join(', ')}`);
+
+    const seen    = new Set();
+    const results = [];
+
+    await Promise.all(hashtags.map(async (hashtag) => {
+      try {
+        const items = await runActor(ACTOR_INSTAGRAM, {
+          directUrls:   [`https://www.instagram.com/explore/tags/${hashtag}/`],
+          resultsType:  'posts',
+          resultsLimit: 100,
+        });
+        items.forEach(r => {
+          const url = r.url || (r.shortCode ? `https://instagram.com/p/${r.shortCode}` : null);
+          if (url && !seen.has(url)) {
+            seen.add(url);
+            results.push({
+              url,
+              platform: 'Instagram',
+              title:    r.caption?.slice(0, 80) || 'Instagram post',
+              snippet:  `${r.likesCount || 0} likes`,
+            });
+          }
+        });
+      } catch (err) {
+        logger.warn(`[SOCIAL] Instagram hashtag "${hashtag}" failed: ${err.message}`);
+      }
+    }));
+
+    logger.info(`[SOCIAL] Instagram total unique results: ${results.length}`);
+    return results;
   } catch (err) {
-    logger.warn(`[SOCIAL] Instagram scrape failed: ${err.message}`);
+    logger.warn(`[SOCIAL] Instagram scan failed: ${err.message}`);
     return [];
   }
 }
