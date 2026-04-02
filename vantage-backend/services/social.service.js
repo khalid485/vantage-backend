@@ -5,7 +5,7 @@ const APIFY_TOKEN = process.env.APIFY_API_TOKEN;
 const APIFY_BASE  = 'https://api.apify.com/v2';
 
 const ACTOR_TIKTOK    = 'GdWCkxBtKWOsKjdch';  // clockworks/tiktok-scraper ✅ working
-const ACTOR_INSTAGRAM = 'cHEjMoZJBi3pnNnMK';  // apify/instagram-hashtag-scraper
+const ACTOR_INSTAGRAM = 'shu8hvrXbJbY3Eb9W';  // apify/instagram-scraper
 
 async function runActor(actorId, input) {
   logger.info(`[SOCIAL] Starting actor ${actorId}`);
@@ -64,8 +64,10 @@ async function scanInstagram(query) {
   try {
     const hashtag = query.replace(/\s+/g, '').toLowerCase();
     logger.info(`[SOCIAL] Instagram scan for hashtag: ${hashtag}`);
+    // apify/instagram-scraper uses directUrls with hashtag URL
     const results = await runActor(ACTOR_INSTAGRAM, {
-      hashtags:     [hashtag],
+      directUrls:   [`https://www.instagram.com/explore/tags/${hashtag}/`],
+      resultsType:  'posts',
       resultsLimit: 10,
     });
     return results.map(r => ({
