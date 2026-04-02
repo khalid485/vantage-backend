@@ -1,19 +1,15 @@
 const supabase   = require('../config/db');
 const discovery  = require('../services/discovery.service');
+const social     = require('../services/social.service');
 const impact     = require('../services/impact.service');
 const audit      = require('../services/auditLog.service');
 const logger     = require('../config/logger');
 
-/**
- * POST /api/discovery/scan
- * Start a new OSINT discovery scan.
- */
 async function startScan(req, res, next) {
   try {
     const { query, assetId } = req.body;
     const userId = req.user.id;
 
-    // Create scan record
     const { data: scan, error: scanErr } = await supabase
       .from('scans')
       .insert({
@@ -28,10 +24,14 @@ async function startScan(req, res, next) {
 
     if (scanErr) throw new Error(scanErr.message);
 
-    // Run discovery (async but we await — add a job queue for scale)
-    const results = await discovery.runDiscoveryScan(query);
+    // Run both scans in parallel
+    const [webResults, socialResults] = await Promise.all([
+      discovery.runDiscoveryScan(query),
+      social.runSocialScan(query)
+    ]);
 
-    // Persist violations
+    const results = [...webResults, ...socialResults];
+
     if (results.length > 0) {
       const rows = results.map(r => ({
         scan_id:  scan.id,
@@ -45,14 +45,12 @@ async function startScan(req, res, next) {
       await supabase.from('violations').insert(rows);
     }
 
-    // Update scan status
     await supabase.from('scans').update({
       status:       'complete',
       result_count: results.length,
       completed_at: new Date().toISOString()
     }).eq('id', scan.id);
 
-    // Calculate revenue impact
     const impactData = await impact.calculateImpact({
       scanId:         scan.id,
       userId,
@@ -69,10 +67,10 @@ async function startScan(req, res, next) {
     });
 
     res.json({
-      scanId:           scan.id,
-      violationCount:   results.length,
-      violations:       results,
-      impactEstimate:   impactData
+      scanId:         scan.id,
+      violationCount: results.length,
+      violations:     results,
+      impactEstimate: impactData
     });
 
   } catch (err) {
@@ -80,10 +78,6 @@ async function startScan(req, res, next) {
   }
 }
 
-/**
- * GET /api/discovery/scans
- * List past scans for the authenticated user.
- */
 async function listScans(req, res, next) {
   try {
     const { page = 1, limit = 20 } = req.query;
@@ -97,17 +91,12 @@ async function listScans(req, res, next) {
       .range(from, from + limit - 1);
 
     if (error) throw new Error(error.message);
-
     res.json({ scans: data, total: count, page, limit });
   } catch (err) {
     next(err);
   }
 }
 
-/**
- * GET /api/discovery/violations
- * List violations for the authenticated user.
- */
 async function listViolations(req, res, next) {
   try {
     const { page = 1, limit = 20, status } = req.query;
@@ -124,17 +113,12 @@ async function listViolations(req, res, next) {
 
     const { data, error, count } = await q;
     if (error) throw new Error(error.message);
-
     res.json({ violations: data, total: count, page, limit });
   } catch (err) {
     next(err);
   }
 }
 
-/**
- * PATCH /api/discovery/violations/:id
- * Update a violation status (human review action).
- */
 async function updateViolation(req, res, next) {
   try {
     const { id }     = req.params;
